@@ -3,24 +3,49 @@ FROM nvcr.io/nvidia/tensorrt:22.12-py3
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /workspace
 
+# ---- Replace APT Sources (Aliyun) ----
+# RUN sed -i 's/http:\/\/archive.ubuntu.com\/ubuntu\//http:\/\/mirrors.aliyun.com\/ubuntu\//g' /etc/apt/sources.list
+
 # ---- Install System Deps ----
-    RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y \
     build-essential cmake ninja-build git wget curl pkg-config \
     software-properties-common \
     libopencv-dev protobuf-compiler \
     ca-certificates gnupg lsb-release \
+    # Python Build Dependencies
+    zlib1g-dev libncurses5-dev libgdbm-dev \
+    libnss3-dev libssl-dev libreadline-dev libffi-dev libsqlite3-dev \
+    libbz2-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# ---- Install Python 3.10 ----
-RUN add-apt-repository ppa:deadsnakes/ppa && \
-    apt-get update && \
-    apt-get install -y python3.10 python3.10-dev python3.10-venv python3.10-distutils && \
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10 && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 && \
-    rm -rf /var/lib/apt/lists/*
+# ---- Compile & Install Python 3.10 ----
+WORKDIR /tmp
+RUN wget https://npmmirror.com/mirrors/python/3.10.12/Python-3.10.12.tgz \
+    && tar -xvf Python-3.10.12.tgz \
+    && cd Python-3.10.12 \
+    && ./configure --enable-optimizations \
+    && make -j$(nproc) \
+    && make altinstall \
+    && cd .. \
+    && rm -rf Python-3.10.12 Python-3.10.12.tgz
+
+# ---- Configure Default Python & Fix System Tools ----
+# 1. Update alternatives to set python3 -> python3.10
+# 2. Fix apt/add-apt-repository to stick to python3.8 (system default) to prevent crashes
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 1 \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3.10 2 \
+    && sed -i 's|#!/usr/bin/python3|#!/usr/bin/python3.8|' /usr/bin/apt || true \
+    && sed -i 's|#!/usr/bin/python3|#!/usr/bin/python3.8|' /usr/bin/add-apt-repository || true
+
+# ---- Configure Pip ----
+# Upgrade pip and link pip3/pip to pip3.10
+# RUN python3 -m pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ \
+#     && python3 -m pip config set global.trusted-host mirrors.aliyun.com
+RUN python3 -m pip install --upgrade pip \
+    && ln -sf /usr/local/bin/pip3.10 /usr/local/bin/pip3 \
+    && ln -sf /usr/local/bin/pip3.10 /usr/local/bin/pip
 
 # ---- Install Python Libraray ----
-RUN python3 -m pip install --upgrade pip
 RUN pip install pybind11 setuptools wheel cython requests pathlib packaging
 
 # ---- Install Rust（Optional）----
@@ -33,6 +58,7 @@ RUN curl https://sh.rustup.rs -sSf | bash -s -- -y \
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # ---- Clone nndeploy Project（Include Submodules）----
+WORKDIR /workspace
 RUN git clone --recursive https://github.com/nndeploy/nndeploy.git . && \
     git pull origin main
 
